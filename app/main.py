@@ -170,7 +170,9 @@ class ApiIdemReplay:
         try:
             require_user(req)
             body = await req.get_media() or {}
-            _json(resp, idem_svc.replay_once(str(body.get("slice_key") or "S1")))
+            result = idem_svc.replay_once(str(body.get("slice_key") or "S1"))
+            # 拦下即 409：页面直接显示一句短话，防重芯片与放行号仍可取。
+            _json(resp, result, 200 if result.get("ok") else 409)
         except ServiceError as exc:
             _json(resp, {"error": exc.message}, exc.status_code)
 

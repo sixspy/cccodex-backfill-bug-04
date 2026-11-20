@@ -66,14 +66,17 @@ def list_slices(window_id: int, db_path: str | None = None) -> list[dict]:
 
 
 def replay_slice(slice_id: int, db_path: str | None = None) -> dict:
-    with get_db(db_path) as conn:
+    # 整笔在写锁内收口：并发连点同一片，只有一次能落库。
+    with get_db(db_path, immediate=True) as conn:
         sl = conn.execute(
             "SELECT * FROM backfill_slices WHERE id=?", (slice_id,)
         ).fetchone()
         if not sl:
             raise ServiceError("切片不存在", 404)
-        # silent: allow re-replay; idempotency left as comment elsewhere
-        if sl["status"] not in ("待重放", "已落库", "失败"):
+        # 唯一片键已落库即拒再点；重复重放不得让目标表叠行。
+        if sl["status"] == "已落库":
+            raise ServiceError("该片已落库，拒再点", 409)
+        if sl["status"] != "待重放" and sl["status"] != "失败":
             raise ServiceError("不可重放", 409)
         # deterministic fake row count from date digits
         rows = 100 + int(sl["slice_date"].replace("-", "")) % 97

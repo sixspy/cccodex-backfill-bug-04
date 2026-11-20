@@ -5,11 +5,17 @@ let windows = [];
 async function api(path, opts={}) {
   const r = await fetch(path, { headers:{'Content-Type':'application/json'}, ...opts });
   const j = await r.json().catch(()=>({}));
-  if (!r.ok) throw new Error(j.error || ('HTTP '+r.status));
+  if (!r.ok) {
+    // 防重拦截也带回芯片/放行号：把结果挂到错误上，页面照样能亮。
+    const err = new Error(j.error || ('HTTP '+r.status));
+    err.data = j; err.status = r.status;
+    throw err;
+  }
   return j;
 }
 function setMsg(t, err=false){ msg.textContent=t||''; msg.className = err?'err':'muted'; }
 async function loadWindows(){ windows = (await api('/api/windows')).items || []; }
+function chipHtml(text){ return text ? `<span class="tag chip-${text==='放行'?'go':'block'}">${text}</span>` : ''; }
 
 function renderWindows(){
   view.innerHTML = `<div class="wall">${windows.map(w=>`
@@ -90,23 +96,64 @@ async function renderCoverage(){
 }
 
 
+function checkStrip(j){
+  // 防重键 / 放行号 / 覆盖条数同屏：一次核对，条数只认一次成功。
+  const card = j.card || {}; const a = j.attach || {};
+  return `<div class="card msg-row">
+      ${chipHtml(card.chip)}
+      <span class="muted">放行号 ${card.pass_no || '—'}</span>
+      <span class="muted">覆盖条数 ${a.rows ?? 0}</span>
+      <span class="muted">后到 ${a.rejects ?? 0} 行（只读历史）</span>
+      <span class="tag ${a.doubled ? 'chip-block' : ''}">条数翻倍 ${a.doubled ? '是' : '否'}</span>
+    </div>`;
+}
 async function render_queue(){
   const j = await api('/api/idem/panels');
-  view.innerHTML = `<div class="wall">${(j.queue||[]).map(r=>`<article class="card"><h3>${r.slice_key}</h3><p>${r.row_payload}</p></article>`).join('')||'<p class="muted">空</p>'}
-    <article class="card"><button class="primary" id="r" type="button">纠偏重放同片</button></article></div>`;
-  document.getElementById('r').onclick = async ()=>{ try{ const r=await api('/api/idem/replay',{method:'POST',body:'{"slice_key":"S1"}'}); setMsg('条数 '+r.count+' · '+r.note); await render_queue(); }catch(e){setMsg(e.message,true);} };
+  const card = j.card || {};
+  view.innerHTML = `${checkStrip(j)}
+    <div class="wall">${(j.queue||[]).map(r=>`<article class="card"><h3>${r.slice_key}</h3><p>${r.row_payload}</p>${chipHtml(r.chip)}</article>`).join('')||'<p class="muted">空</p>'}
+    <article class="card"><button class="primary" id="r" type="button">纠偏重放同片</button></article></div>
+    ${(j.history||[]).length ? `<div class="card"><p class="muted">后到行只读历史</p>
+      <div class="wall">${j.history.map(h=>`<article class="card"><h3>${h.slice_key}</h3><p>${h.row_payload}</p><p class="muted">${h.reason}</p>${chipHtml(h.chip)}</article>`).join('')}</div></div>` : ''}`;
+  const btn = document.getElementById('r');
+  const go = async ()=>{
+    // 页上先收口：连点时按钮不再派发第二次请求。
+    btn.disabled = true;
+    try{
+      const r = await api('/api/idem/replay',{method:'POST',body:'{"slice_key":"S1"}'});
+      setMsg(`放行 ${r.pass_no} · 条数 ${r.count}`);
+    }catch(e){
+      const d = e.data || {};
+      setMsg((d.error || e.message) + (d.chip ? ` · ${d.chip}` : ''), true);
+    }finally{
+      await render_queue();
+    }
+  };
+  btn.onclick = go;
 }
 async function render_detail(){
   const j = await api('/api/idem/panels');
-  view.innerHTML = `<div class="card"><p>片键现行 ${j.detail.live}</p><p>放行门槛 ${j.detail.gate}</p></div>`;
+  const d = j.detail || {};
+  view.innerHTML = `<div class="card">
+      <p>片键现行 ${d.live || '—'} · 放行门槛 ${d.gate || '—'}</p>
+      <p class="muted">唯一片键索引 ${d.index || '缺失'} · 同源 ${d.same_source ? '是' : '否（双键即拦）'}</p>
+    </div>`;
 }
 async function render_card(){
   const j = await api('/api/idem/panels');
-  view.innerHTML = `<div class="card"><span class="tag">${j.card.fate}</span><p>${j.card.pass_no}</p></div>`;
+  const c = j.card || {};
+  view.innerHTML = `<div class="card">
+      ${chipHtml(c.chip)} <span class="tag">${c.fate}</span>
+      <p>放行号 ${c.pass_no || '—'}</p><p class="muted">${c.note || ''}</p>
+    </div>`;
 }
 async function render_attach(){
   const j = await api('/api/idem/panels');
-  view.innerHTML = `<div class="card"><p>覆盖条数 ${j.attach.rows}</p></div>`;
+  const a = j.attach || {};
+  view.innerHTML = `<div class="card">
+      <p>覆盖条数 ${a.rows}（成功 ${a.success} 次 · 后到 ${a.rejects} 行留只读历史）</p>
+      <p class="muted">条数翻倍 ${a.doubled ? '是' : '否'}</p>
+    </div>`;
 }
 
 async function show(tab){
